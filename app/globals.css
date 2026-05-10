@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-green: #1B5E20;
+  --color-brand-green-light: #2E7D32;
+  --color-brand-gold: #F9A825;
+  --color-brand-gold-light: #FBC02D;
+  
+  --font-sans: "Inter", var(--font-sans);
+}
+
+@layer base {
+  :root {
+    --background: #ffffff;
+    --foreground: #1f2937; /* gray-800 */
+  }
+
+  html, body {
+    scroll-behavior: smooth;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--font-sans);
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
