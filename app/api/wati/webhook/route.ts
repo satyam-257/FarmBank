@@ -16,7 +16,8 @@ export async function POST(req: Request) {
       if (msg.type !== 'text') continue;
 
       const phone = msg.from.replace(/^91/, ''); // Strip 91 prefix if present for our DB
-      const text = msg.text.body.trim().toUpperCase();
+      const text = msg.text.body.trim();
+      const textUpper = text.toUpperCase();
 
       // Log conversation
       await supabase.from('whatsapp_logs').insert({
@@ -26,27 +27,89 @@ export async function POST(req: Request) {
         status: 'received'
       });
 
-      // Simple Router
-      if (text === 'KISAN') {
-        const menu = `🌾 Namaste! FarmBank mein aapka swagat hai.\n\nKya karna chahte hain?\n1️⃣ Naya KisanID banaye\n2️⃣ Loan ke liye apply karein\n3️⃣ Fasal beche (Marketplace)\n4️⃣ Help (Vaibhav se baat karein)\n\nReply with 1, 2, 3, or 4`;
+      // Fetch active session
+      const { data: session } = await supabase
+        .from('whatsapp_sessions')
+        .select('*')
+        .eq('phone', phone)
+        .single();
+
+      if (!session || session.current_step === 'DONE') {
+        // Start a new session
+        await supabase.from('whatsapp_sessions').upsert({
+          phone: phone,
+          current_step: 'PURPOSE',
+          purpose: null,
+          eligible: null,
+          name: null,
+          location: null,
+          updated_at: new Date().toISOString()
+        });
+        
+        const menu = `🌾 Welcome to FarmBank! How can we assist you today?\n1️⃣ Apply for a Loan\n2️⃣ Sell Crops\n3️⃣ Buy Insurance\n4️⃣ Other Support\n*(Reply with 1, 2, 3, or 4)*`;
         await sendWatiSessionMessage(phone, menu);
+        continue;
       }
-      else if (text === '1') {
-        await sendWatiSessionMessage(phone, "Aapka poora naam kya hai?");
-        // Note: Real state machine logic requires session state management (Redis or DB)
+
+      // State Machine
+      const { current_step } = session;
+
+      if (current_step === 'PURPOSE') {
+        let purposeText = 'Other';
+        if (text === '1') purposeText = 'Loan';
+        else if (text === '2') purposeText = 'Sell Crop';
+        else if (text === '3') purposeText = 'Insurance';
+        else purposeText = text; // allow them to type out purpose
+        
+        await supabase.from('whatsapp_sessions').update({
+          purpose: purposeText,
+          current_step: 'ELIGIBILITY',
+          updated_at: new Date().toISOString()
+        }).eq('phone', phone);
+
+        await sendWatiSessionMessage(phone, "Great! To verify your eligibility, do you have your land's Khasra Number and Aadhaar Card ready? (Reply YES or NO)");
       }
-      else if (text === '2') {
-        await sendWatiSessionMessage(phone, "Loan ke liye, kripya apna KisanID likhein:");
+      else if (current_step === 'ELIGIBILITY') {
+        const isEligible = textUpper === 'YES' || textUpper === 'Y' || textUpper === 'HAAN';
+        
+        if (!isEligible) {
+          await supabase.from('whatsapp_sessions').update({
+            eligible: false,
+            current_step: 'DONE',
+            updated_at: new Date().toISOString()
+          }).eq('phone', phone);
+          
+          await sendWatiSessionMessage(phone, "No problem. Our team will contact you to help you gather the necessary documents. Have a great day!");
+          await notifyAdmin(`New Lead (Missing Docs):\nPhone: ${phone}\nPurpose: ${session.purpose}`);
+        } else {
+          await supabase.from('whatsapp_sessions').update({
+            eligible: true,
+            current_step: 'NAME',
+            updated_at: new Date().toISOString()
+          }).eq('phone', phone);
+          
+          await sendWatiSessionMessage(phone, "Excellent. Please reply with your *Full Name*:");
+        }
       }
-      else if (text === '3') {
-        await sendWatiSessionMessage(phone, "Kaunsi fasal bechni hai? (Udharan: Tomato 500kg)");
+      else if (current_step === 'NAME') {
+        await supabase.from('whatsapp_sessions').update({
+          name: text,
+          current_step: 'LOCATION',
+          updated_at: new Date().toISOString()
+        }).eq('phone', phone);
+        
+        await sendWatiSessionMessage(phone, "Thank you! Please reply with your *Village and District*:");
       }
-      else if (text === '4') {
-        await sendWatiSessionMessage(phone, "Vaibhav jaldi hi aapko call karenge. Emergency ke liye: +91 8840098153 par call karein.");
-      }
-      else {
-        // Forward unknown messages directly to Admin
-        await notifyAdmin(`New message from ${phone}: ${text}`);
+      else if (current_step === 'LOCATION') {
+        await supabase.from('whatsapp_sessions').update({
+          location: text,
+          current_step: 'DONE',
+          updated_at: new Date().toISOString()
+        }).eq('phone', phone);
+        
+        await sendWatiSessionMessage(phone, "Thank you for the details. Our team will call you shortly to assist you with the rest of your process! 📞");
+        
+        await notifyAdmin(`🚨 *New Complete Lead* 🚨\nName: ${session.name}\nPhone: ${phone}\nLocation: ${text}\nPurpose: ${session.purpose}\nEligible (Docs): Yes`);
       }
     }
 
